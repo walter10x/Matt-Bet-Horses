@@ -1,0 +1,6 @@
+# .env
+SECRET_KEY="aqui vas coocar tu clave secreta de flask"
+MONGODB_URI=aqui tu clave base de datos 
+JWT_SECRET_KEY=aqui ti secret key de flask jwt extended 
+
+
