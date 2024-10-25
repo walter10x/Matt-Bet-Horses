@@ -1,21 +1,26 @@
 from flask import Blueprint, request, jsonify
-from models.user_model import UserModel
+from services.auth_service import AuthService
 from pymongo import MongoClient
 from config import Config
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required, get_jwt_identity
 import logging
 
 auth_routes = Blueprint('auth_routes', __name__)
 
-client = MongoClient(Config.MONGO_URI)
-db = client['bet_db']
-user_model = UserModel(db)
+try:
+    client = MongoClient(Config.MONGO_URI)
+    db = client['bet_db']
+    auth_service = AuthService(db)
+except Exception as e:
+    logging.error(f"Error al conectar con MongoDB: {str(e)}")
+    raise
 
 def handle_error(message, status_code):
     logging.error(f"Error: {message}")
     return jsonify({'error': message}), status_code
 
 @auth_routes.route('/register', methods=['POST'])
+@jwt_required(optional=True)
 def register():
     try:
         data = request.get_json()
@@ -25,19 +30,20 @@ def register():
         username = data.get('username')
         email = data.get('email')
         password = data.get('password')
+        role = data.get('role', 'user')
 
+        # Validar campos
         if not username or not email or not password:
             return handle_error('Faltan campos requeridos', 400)
-        
-        if user_model.find_user_by_email(email):
-            return handle_error('Email ya registrado', 400)
 
-        user_id = user_model.create_user(username, email, password)
-        logging.info(f"Usuario registrado: {email}")
+        # Registrar el usuario utilizando AuthService
+        user_id = auth_service.register_user(username, email, password, role)
         return jsonify({'message': 'Usuario registrado exitosamente', 'user_id': str(user_id)}), 201
-
+    except ValueError as e:
+        return handle_error(str(e), 400)
     except Exception as e:
-        return handle_error(f'Ocurrió un error: {str(e)}', 500)
+        logging.error(f"Error inesperado: {str(e)}")
+        return handle_error('Ocurrió un error interno del servidor', 500)
 
 @auth_routes.route('/login', methods=['POST'])
 def login():
@@ -46,36 +52,25 @@ def login():
         if not data:
             return handle_error('No se recibieron datos', 400)
         
-        email = data.get('email')
+        identifier = data.get('identifier')
         password = data.get('password')
 
-        if not email or not password:
+        if not identifier or not password:
             return handle_error('Faltan campos requeridos', 400)
 
-        user = user_model.find_user_by_email(email)
-        if not user or not user_model.verify_password(user, password):
-            return handle_error('Credenciales inválidas', 401)
-
-        access_token = create_access_token(identity=str(user['_id']))
-        logging.info(f"Inicio de sesión exitoso: {email}")
+        # Intentar iniciar sesión utilizando AuthService
+        access_token, user = auth_service.login_user(identifier, password)
         return jsonify({
             'message': 'Inicio de sesión exitoso',
             'access_token': access_token,
-            'user': user_model.serialize(user)
+            'user': {
+                'id': str(user['_id']),
+                'username': user['username'],
+                'role': user['role']
+            }
         }), 200
-
+    except ValueError as e:
+        return handle_error(str(e), 401)
     except Exception as e:
-        return handle_error(f'Ocurrió un error: {str(e)}', 500)
-
-@auth_routes.route('/protected', methods=['GET'])
-@jwt_required()
-def protected():
-    try:
-        current_user_id = get_jwt_identity()
-        logging.info(f"Accediendo a ruta protegida. Usuario ID: {current_user_id}")
-        user = user_model.find_user_by_id(current_user_id)
-        if not user:
-            return handle_error("Usuario no encontrado", 404)
-        return jsonify(logged_in_as=user_model.serialize(user)), 200
-    except Exception as e:
-        return handle_error(f"Error al acceder a la ruta protegida: {str(e)}", 500)
+        logging.error(f"Error inesperado en login: {str(e)}")
+        return handle_error('Ocurrió un error interno del servidor', 500)
